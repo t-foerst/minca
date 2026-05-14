@@ -52,6 +52,28 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "Minca");
   }
 
+  // Sync GTK dark-mode preference with the GNOME color-scheme setting so the
+  // native header bar matches the Flutter dark theme.
+  {
+    gboolean prefer_dark = FALSE;
+    GSettingsSchemaSource* src = g_settings_schema_source_get_default();
+    if (src != NULL) {
+      GSettingsSchema* schema = g_settings_schema_source_lookup(
+          src, "org.gnome.desktop.interface", TRUE);
+      if (schema != NULL) {
+        GSettings* iface = g_settings_new("org.gnome.desktop.interface");
+        gchar* scheme = g_settings_get_string(iface, "color-scheme");
+        prefer_dark = (g_strcmp0(scheme, "prefer-dark") == 0);
+        g_free(scheme);
+        g_object_unref(iface);
+        g_settings_schema_unref(schema);
+      }
+    }
+    GtkSettings* gtk_settings = gtk_settings_get_default();
+    g_object_set(gtk_settings, "gtk-application-prefer-dark-theme",
+                 prefer_dark, NULL);
+  }
+
   gtk_window_set_default_size(window, 1280, 720);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
