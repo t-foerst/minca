@@ -1,13 +1,15 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import '../models/calendar_collection.dart';
 import '../models/event.dart';
 import '../services/caldav_service.dart';
 
 const _keyUrl = 'caldav_url';
 const _keyUsername = 'caldav_username';
 const _keyPassword = 'caldav_password';
-const _keyPath = 'caldav_path';
+const _keyActivePaths = 'caldav_active_paths';
 
 const _uuid = Uuid();
 
@@ -20,6 +22,8 @@ class CalendarProvider extends ChangeNotifier {
   DateTime _selectedDate = DateTime.now();
   DateTime _viewMonth = DateTime.now();
   List<CalendarEvent> _events = [];
+  // Normalized paths (no leading/trailing slashes), e.g. "thorben/uuid"
+  Set<String> _activePaths = {};
   bool _isLoading = false;
   String? _error;
 
@@ -36,48 +40,39 @@ class CalendarProvider extends ChangeNotifier {
 
   bool hasEventsOn(DateTime date) => _events.any((e) => e.occursOn(date));
 
+  bool isCalendarActive(CalendarCollection cal) =>
+      _activePaths.contains(_normalize(cal.path));
+
   String get savedUrl => _prefs.getString(_keyUrl) ?? '';
   String get savedUsername => _prefs.getString(_keyUsername) ?? '';
   String get savedPassword => _prefs.getString(_keyPassword) ?? '';
-  String get savedPath => _prefs.getString(_keyPath) ?? '';
 
   Future<void> initialize() async {
     final url = _prefs.getString(_keyUrl);
     final username = _prefs.getString(_keyUsername);
     final password = _prefs.getString(_keyPassword);
-    final path = _prefs.getString(_keyPath);
 
-    if (url != null && username != null && password != null && path != null) {
-      _service = CalDavService(
-        baseUrl: url,
-        username: username,
-        password: password,
-        calendarPath: path,
-      );
+    if (url != null && username != null && password != null) {
+      _service = CalDavService(baseUrl: url, username: username, password: password);
+
+      final pathsJson = _prefs.getString(_keyActivePaths);
+      if (pathsJson != null) {
+        final List<dynamic> paths = jsonDecode(pathsJson);
+        _activePaths = paths.cast<String>().toSet();
+      }
+
       notifyListeners();
       await loadEvents();
     }
   }
 
-  Future<void> configure(
-    String url,
-    String username,
-    String password,
-    String path,
-  ) async {
-    final service = CalDavService(
-      baseUrl: url,
-      username: username,
-      password: password,
-      calendarPath: path,
-    );
-
+  Future<void> configure(String url, String username, String password) async {
+    final service = CalDavService(baseUrl: url, username: username, password: password);
     await service.testConnection();
 
     await _prefs.setString(_keyUrl, url);
     await _prefs.setString(_keyUsername, username);
     await _prefs.setString(_keyPassword, password);
-    await _prefs.setString(_keyPath, path);
 
     _service = service;
     notifyListeners();
@@ -96,7 +91,13 @@ class CalendarProvider extends ChangeNotifier {
   }
 
   Future<void> loadEvents() async {
-    if (_service == null) return;
+    if (_service == null || _activePaths.isEmpty) {
+      _events = [];
+      _isLoading = false;
+      notifyListeners();
+      return;
+    }
+
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -104,13 +105,49 @@ class CalendarProvider extends ChangeNotifier {
     try {
       final start = DateTime(_viewMonth.year, _viewMonth.month - 1, 1);
       final end = DateTime(_viewMonth.year, _viewMonth.month + 2, 1);
-      _events = await _service!.fetchEvents(start, end);
+      final allEvents = <CalendarEvent>[];
+      for (final normalizedPath in _activePaths) {
+        final events = await _service!.fetchEvents('/$normalizedPath/', start, end);
+        allEvents.addAll(events);
+      }
+      _events = allEvents;
     } catch (e) {
       _error = e.toString();
     } finally {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  Future<List<CalendarCollection>> loadCalendars() async {
+    if (_service == null) throw Exception('Nicht verbunden');
+    return _service!.listCalendars();
+  }
+
+  Future<void> toggleCalendar(CalendarCollection calendar) async {
+    final normalized = _normalize(calendar.path);
+    if (_activePaths.contains(normalized)) {
+      _activePaths.remove(normalized);
+    } else {
+      _activePaths.add(normalized);
+    }
+    await _saveActivePaths();
+    notifyListeners();
+    await loadEvents();
+  }
+
+  Future<void> addCalendar(String name) async {
+    if (_service == null) throw Exception('Nicht verbunden');
+    final cal = await _service!.createCalendar(name);
+    await toggleCalendar(cal);
+  }
+
+  Future<void> removeCalendar(CalendarCollection calendar) async {
+    if (_service == null) throw Exception('Nicht verbunden');
+    await _service!.deleteCalendar(calendar.path);
+    _activePaths.remove(_normalize(calendar.path));
+    await _saveActivePaths();
+    await loadEvents();
   }
 
   Future<void> createEvent({
@@ -121,8 +158,9 @@ class CalendarProvider extends ChangeNotifier {
     String? description,
     String? location,
   }) async {
+    if (_activePaths.isEmpty) throw Exception('Kein Kalender ausgewählt');
+    final calPath = '/${_activePaths.first}/';
     final uid = _uuid.v4();
-    final path = savedPath.endsWith('/') ? savedPath : '$savedPath/';
     final event = CalendarEvent(
       uid: uid,
       summary: summary,
@@ -131,7 +169,7 @@ class CalendarProvider extends ChangeNotifier {
       allDay: allDay,
       description: description,
       location: location,
-      href: '$path$uid.ics',
+      href: '$calPath$uid.ics',
     );
     await _service!.createEvent(event);
     await loadEvents();
@@ -146,4 +184,10 @@ class CalendarProvider extends ChangeNotifier {
     await _service!.deleteEvent(event);
     await loadEvents();
   }
+
+  Future<void> _saveActivePaths() async {
+    await _prefs.setString(_keyActivePaths, jsonEncode(_activePaths.toList()));
+  }
+
+  static String _normalize(String path) => path.replaceAll(RegExp(r'^/|/$'), '');
 }

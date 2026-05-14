@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
 import 'package:xml/xml.dart';
+import '../models/calendar_collection.dart';
 import '../models/event.dart';
 import 'ical_parser.dart';
 
@@ -17,20 +19,17 @@ class CalDavService {
   final String baseUrl;
   final String username;
   final String password;
-  final String calendarPath;
 
   CalDavService({
     required this.baseUrl,
     required this.username,
     required this.password,
-    required this.calendarPath,
   });
 
-  String get _calendarUrl {
-    final base = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
-    final path = calendarPath.startsWith('/') ? calendarPath : '/$calendarPath';
-    return '$base$path';
-  }
+  String get _base =>
+      baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
+
+  String get _userHomeUrl => '$_base/$username/';
 
   Map<String, String> get _authHeader => {
         'Authorization': 'Basic ${base64Encode(utf8.encode('$username:$password'))}',
@@ -38,8 +37,7 @@ class CalDavService {
 
   String _absoluteUrl(String href) {
     if (href.startsWith('http')) return href;
-    final base = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
-    return '$base$href';
+    return '$_base$href';
   }
 
   Future<http.Response> _send(
@@ -60,16 +58,20 @@ class CalDavService {
   Future<void> testConnection() async {
     final response = await _send(
       'PROPFIND',
-      _calendarUrl,
+      _userHomeUrl,
       body: '<D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>',
       extraHeaders: {'Depth': '0', 'Content-Type': 'application/xml; charset=utf-8'},
     );
     if (response.statusCode != 207 && response.statusCode != 200) {
-      throw CalDavException('Connection failed', statusCode: response.statusCode);
+      throw CalDavException('Verbindung fehlgeschlagen', statusCode: response.statusCode);
     }
   }
 
-  Future<List<CalendarEvent>> fetchEvents(DateTime rangeStart, DateTime rangeEnd) async {
+  Future<List<CalendarEvent>> fetchEvents(
+    String calendarPath,
+    DateTime rangeStart,
+    DateTime rangeEnd,
+  ) async {
     final startStr = _formatUtc(rangeStart);
     final endStr = _formatUtc(rangeEnd);
 
@@ -90,16 +92,14 @@ class CalDavService {
 
     final response = await _send(
       'REPORT',
-      _calendarUrl,
+      _absoluteUrl(calendarPath),
       body: body,
-      extraHeaders: {
-        'Depth': '1',
-        'Content-Type': 'application/xml; charset=utf-8',
-      },
+      extraHeaders: {'Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'},
     );
 
     if (response.statusCode != 207) {
-      throw CalDavException('Failed to fetch events', statusCode: response.statusCode);
+      throw CalDavException('Ereignisse konnten nicht geladen werden',
+          statusCode: response.statusCode);
     }
 
     return _parseMultistatus(response.body);
@@ -145,8 +145,7 @@ class CalDavService {
   }
 
   Future<void> createEvent(CalendarEvent event) async {
-    final path = calendarPath.endsWith('/') ? calendarPath : '$calendarPath/';
-    final url = _absoluteUrl('$path${event.uid}.ics');
+    final url = _absoluteUrl(event.href);
     final ical = ICalParser.serialize(event);
 
     final response = await _send(
@@ -157,7 +156,8 @@ class CalDavService {
     );
 
     if (response.statusCode != 201 && response.statusCode != 204) {
-      throw CalDavException('Failed to create event', statusCode: response.statusCode);
+      throw CalDavException('Termin konnte nicht erstellt werden',
+          statusCode: response.statusCode);
     }
   }
 
@@ -171,7 +171,8 @@ class CalDavService {
     final response = await _send('PUT', url, body: ical, extraHeaders: headers);
 
     if (response.statusCode != 201 && response.statusCode != 204) {
-      throw CalDavException('Failed to update event', statusCode: response.statusCode);
+      throw CalDavException('Termin konnte nicht aktualisiert werden',
+          statusCode: response.statusCode);
     }
   }
 
@@ -183,7 +184,110 @@ class CalDavService {
     final response = await _send('DELETE', url, extraHeaders: headers);
 
     if (response.statusCode != 200 && response.statusCode != 204) {
-      throw CalDavException('Failed to delete event', statusCode: response.statusCode);
+      throw CalDavException('Termin konnte nicht gelöscht werden',
+          statusCode: response.statusCode);
+    }
+  }
+
+  Future<List<CalendarCollection>> listCalendars() async {
+    const body =
+        '<?xml version="1.0" encoding="utf-8" ?>'
+        '<D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+        '<D:prop><D:displayname/><D:resourcetype/></D:prop>'
+        '</D:propfind>';
+
+    final response = await _send(
+      'PROPFIND',
+      _userHomeUrl,
+      body: body,
+      extraHeaders: {'Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'},
+    );
+
+    if (response.statusCode != 207) {
+      throw CalDavException('Kalender konnten nicht geladen werden',
+          statusCode: response.statusCode);
+    }
+
+    return _parseCalendarList(response.body);
+  }
+
+  List<CalendarCollection> _parseCalendarList(String xmlBody) {
+    final calendars = <CalendarCollection>[];
+    final doc = XmlDocument.parse(xmlBody);
+
+    for (final response in doc.descendants
+        .whereType<XmlElement>()
+        .where((e) => e.name.local == 'response')) {
+      final href = response.descendants
+          .whereType<XmlElement>()
+          .where((e) => e.name.local == 'href')
+          .firstOrNull
+          ?.innerText
+          .trim();
+      if (href == null) continue;
+
+      final resourceType = response.descendants
+          .whereType<XmlElement>()
+          .where((e) => e.name.local == 'resourcetype')
+          .firstOrNull;
+      if (resourceType == null) continue;
+
+      if (!resourceType.descendants
+          .whereType<XmlElement>()
+          .any((e) => e.name.local == 'calendar')) continue;
+
+      final displayName = response.descendants
+              .whereType<XmlElement>()
+              .where((e) => e.name.local == 'displayname')
+              .firstOrNull
+              ?.innerText
+              .trim() ??
+          '';
+
+      calendars.add(CalendarCollection(
+        path: href,
+        displayName: displayName.isEmpty ? href : displayName,
+      ));
+    }
+
+    return calendars;
+  }
+
+  Future<CalendarCollection> createCalendar(String displayName) async {
+    const uuid = Uuid();
+    final uid = uuid.v4();
+    final calPath = '/$username/$uid/';
+    final url = '$_base$calPath';
+
+    final body =
+        '<?xml version="1.0" encoding="utf-8" ?>'
+        '<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+        '<D:set><D:prop>'
+        '<D:displayname>$displayName</D:displayname>'
+        '</D:prop></D:set>'
+        '</C:mkcalendar>';
+
+    final response = await _send(
+      'MKCALENDAR',
+      url,
+      body: body,
+      extraHeaders: {'Content-Type': 'application/xml; charset=utf-8'},
+    );
+
+    if (response.statusCode != 201) {
+      throw CalDavException('Kalender konnte nicht erstellt werden',
+          statusCode: response.statusCode);
+    }
+
+    return CalendarCollection(path: calPath, displayName: displayName);
+  }
+
+  Future<void> deleteCalendar(String calPath) async {
+    final response = await _send('DELETE', _absoluteUrl(calPath));
+
+    if (response.statusCode != 200 && response.statusCode != 204) {
+      throw CalDavException('Kalender konnte nicht gelöscht werden',
+          statusCode: response.statusCode);
     }
   }
 

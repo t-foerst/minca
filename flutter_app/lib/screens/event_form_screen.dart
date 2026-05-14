@@ -50,7 +50,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
       _startTime = const TimeOfDay(hour: 9, minute: 0);
       _endDate = widget.initialDate;
       _endTime = const TimeOfDay(hour: 10, minute: 0);
-      _allDay = false;
+      _allDay = true;
     }
   }
 

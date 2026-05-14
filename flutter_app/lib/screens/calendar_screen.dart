@@ -207,74 +207,96 @@ class _MonthGrid extends StatelessWidget {
 
 // ── Single day cell ───────────────────────────────────────────────────────────
 
-class _DayCell extends StatelessWidget {
+class _DayCell extends StatefulWidget {
   final DateTime? date;
   final DateTime today;
 
   const _DayCell({required this.date, required this.today});
 
   @override
+  State<_DayCell> createState() => _DayCellState();
+}
+
+class _DayCellState extends State<_DayCell> {
+  bool _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
-    if (date == null) return const SizedBox.expand();
+    if (widget.date == null) return const SizedBox.expand();
 
     final provider = context.watch<CalendarProvider>();
     final cs = Theme.of(context).colorScheme;
 
-    final isSelected = DateUtils.isSameDay(date, provider.selectedDate);
-    final isToday = DateUtils.isSameDay(date, today);
-    final isCurrentMonth = date!.month == provider.viewMonth.month;
+    final isSelected = DateUtils.isSameDay(widget.date, provider.selectedDate);
+    final isToday = DateUtils.isSameDay(widget.date, widget.today);
+    final isCurrentMonth = widget.date!.month == provider.viewMonth.month;
 
-    // Sort: all-day first, then by start time
     final events = provider.events
-        .where((e) => e.occursOn(date!))
+        .where((e) => e.occursOn(widget.date!))
         .toList()
       ..sort((a, b) {
         if (a.allDay != b.allDay) return a.allDay ? -1 : 1;
         return a.start.compareTo(b.start);
       });
 
-    return GestureDetector(
-      onTap: () => provider.selectDate(date!),
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.all(2),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Day number with today/selected indicator
-            Container(
-              width: 24,
-              height: 24,
-              margin: const EdgeInsets.only(left: 2, top: 2, bottom: 2),
-              decoration: isSelected
-                  ? BoxDecoration(
-                      color: cs.onSurface,
-                      shape: BoxShape.circle,
-                    )
-                  : isToday
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: () {
+          provider.selectDate(widget.date!);
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => EventFormScreen(initialDate: widget.date!),
+            ),
+          );
+        },
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 100),
+          color: _hovered
+              ? cs.surfaceContainerHighest.withValues(alpha: 0.55)
+              : Colors.transparent,
+          child: Padding(
+            padding: const EdgeInsets.all(2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  margin: const EdgeInsets.only(left: 2, top: 2, bottom: 2),
+                  decoration: isSelected
                       ? BoxDecoration(
-                          border: Border.all(color: cs.onSurface, width: 1.5),
+                          color: cs.onSurface,
                           shape: BoxShape.circle,
                         )
-                      : null,
-              child: Center(
-                child: Text(
-                  '${date!.day}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: isToday ? FontWeight.w700 : FontWeight.normal,
-                    color: isSelected
-                        ? cs.surface
-                        : isCurrentMonth
-                            ? cs.onSurface
-                            : cs.onSurface.withValues(alpha: 0.3),
+                      : isToday
+                          ? BoxDecoration(
+                              border: Border.all(color: cs.onSurface, width: 1.5),
+                              shape: BoxShape.circle,
+                            )
+                          : null,
+                  child: Center(
+                    child: Text(
+                      '${widget.date!.day}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: isToday ? FontWeight.w700 : FontWeight.normal,
+                        color: isSelected
+                            ? cs.surface
+                            : isCurrentMonth
+                                ? cs.onSurface
+                                : cs.onSurface.withValues(alpha: 0.3),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                Expanded(child: _CellEvents(events: events)),
+              ],
             ),
-            // Event chips (fill remaining cell height)
-            Expanded(child: _CellEvents(events: events)),
-          ],
+          ),
         ),
       ),
     );
