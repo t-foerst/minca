@@ -117,7 +117,6 @@ class _MonthHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Consumer<CalendarProvider>(
       builder: (context, provider, _) {
         final label = DateFormat('MMMM yyyy', 'de').format(provider.viewMonth);
@@ -141,19 +140,9 @@ class _MonthHeader extends StatelessWidget {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    // Always reserve this fixed space so the text position
-                    // never shifts when the loading indicator appears/disappears.
+                    // Fixed slot keeps text centred regardless of loading state.
                     const SizedBox(width: 8),
-                    SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: provider.isLoading
-                          ? CircularProgressIndicator(
-                              strokeWidth: 1.5,
-                              color: cs.onSurfaceVariant,
-                            )
-                          : null,
-                    ),
+                    const SizedBox(width: 12, height: 12),
                   ],
                 ),
               ),

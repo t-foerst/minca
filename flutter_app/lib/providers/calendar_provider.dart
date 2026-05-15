@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../models/calendar_collection.dart';
 import '../models/event.dart';
 import '../services/caldav_service.dart';
+import '../services/ical_parser.dart';
 
 const _keyUrl = 'caldav_url';
 const _keyUsername = 'caldav_username';
@@ -175,6 +176,22 @@ class CalendarProvider extends ChangeNotifier {
     );
     await _service!.createEvent(event);
     await loadEvents();
+  }
+
+  String exportEvents() => ICalParser.serializeAll(_events);
+
+  Future<int> importEvents(String icsContent) async {
+    if (_service == null) throw Exception('Nicht verbunden');
+    if (_activePaths.isEmpty) throw Exception('Kein Kalender ausgewählt');
+    final calPath = '/${_activePaths.first}/';
+    final parsed = ICalParser.parseAll(icsContent);
+    for (final event in parsed) {
+      final uid = _uuid.v4();
+      final href = '$calPath$uid.ics';
+      await _service!.createEvent(event.copyWith(uid: uid, href: href));
+    }
+    await loadEvents();
+    return parsed.length;
   }
 
   Future<void> updateEvent(CalendarEvent event) async {

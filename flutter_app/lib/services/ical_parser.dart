@@ -52,6 +52,89 @@ class ICalParser {
     );
   }
 
+  // Parses all VEVENTs from a VCALENDAR string (e.g. an imported .ics file).
+  // href and etag are left empty — the caller assigns them before pushing to CalDAV.
+  static List<CalendarEvent> parseAll(String icalData) {
+    final lines = _unfold(icalData);
+    final results = <CalendarEvent>[];
+    var inEvent = false;
+    var props = <String, _Property>{};
+
+    for (final line in lines) {
+      if (line == 'BEGIN:VEVENT') {
+        inEvent = true;
+        props = {};
+        continue;
+      }
+      if (line == 'END:VEVENT') {
+        inEvent = false;
+        final uid = props['UID']?.value;
+        final summary = props['SUMMARY']?.value;
+        final dtstart = props['DTSTART'];
+        if (uid != null && summary != null && dtstart != null) {
+          final isAllDay =
+              dtstart.params['VALUE'] == 'DATE' || dtstart.value.length == 8;
+          final start = _parseICalDate(dtstart.value, dtstart.params);
+          final dtend = props['DTEND'];
+          final end = dtend != null
+              ? _parseICalDate(dtend.value, dtend.params)
+              : isAllDay
+                  ? start.add(const Duration(days: 1))
+                  : start.add(const Duration(hours: 1));
+          results.add(CalendarEvent(
+            uid: uid,
+            summary: _unescapeText(summary),
+            start: start,
+            end: end,
+            allDay: isAllDay,
+            description: props['DESCRIPTION'] != null
+                ? _unescapeText(props['DESCRIPTION']!.value)
+                : null,
+            location: props['LOCATION'] != null
+                ? _unescapeText(props['LOCATION']!.value)
+                : null,
+            href: '',
+          ));
+        }
+        continue;
+      }
+      if (!inEvent) continue;
+      final prop = _parseLine(line);
+      if (prop != null) props[prop.name] = prop;
+    }
+    return results;
+  }
+
+  // Serializes multiple events into a single VCALENDAR string.
+  static String serializeAll(List<CalendarEvent> events) {
+    final buf = StringBuffer();
+    buf.writeln('BEGIN:VCALENDAR');
+    buf.writeln('VERSION:2.0');
+    buf.writeln('PRODID:-//Minca//Minca//EN');
+    for (final event in events) {
+      buf.writeln('BEGIN:VEVENT');
+      buf.writeln('UID:${event.uid}');
+      buf.writeln('DTSTAMP:${_formatDateTime(DateTime.now().toUtc(), utc: true)}');
+      if (event.allDay) {
+        buf.writeln('DTSTART;VALUE=DATE:${_formatDate(event.start)}');
+        buf.writeln('DTEND;VALUE=DATE:${_formatDate(event.end)}');
+      } else {
+        buf.writeln('DTSTART:${_formatDateTime(event.start.toUtc(), utc: true)}');
+        buf.writeln('DTEND:${_formatDateTime(event.end.toUtc(), utc: true)}');
+      }
+      buf.writeln('SUMMARY:${_escapeText(event.summary)}');
+      if (event.description != null && event.description!.isNotEmpty) {
+        buf.writeln('DESCRIPTION:${_escapeText(event.description!)}');
+      }
+      if (event.location != null && event.location!.isNotEmpty) {
+        buf.writeln('LOCATION:${_escapeText(event.location!)}');
+      }
+      buf.writeln('END:VEVENT');
+    }
+    buf.writeln('END:VCALENDAR');
+    return buf.toString();
+  }
+
   static String serialize(CalendarEvent event) {
     final buf = StringBuffer();
     buf.writeln('BEGIN:VCALENDAR');

@@ -1,4 +1,9 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../models/calendar_collection.dart';
 import '../providers/calendar_provider.dart';
@@ -19,6 +24,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _obscurePassword = true;
   bool _isConnecting = false;
+  bool _isImporting = false;
   String? _connectionError;
 
   List<CalendarCollection>? _calendars;
@@ -161,6 +167,85 @@ class _SettingsScreenState extends State<SettingsScreen> {
           backgroundColor: Theme.of(context).colorScheme.error,
         ));
       }
+    }
+  }
+
+  Future<void> _exportCalendar() async {
+    final content = context.read<CalendarProvider>().exportEvents();
+    if (content.isEmpty) return;
+
+    try {
+      if (Platform.isAndroid) {
+        final dir = await getExternalStorageDirectory() ??
+            await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/minca_export.ics');
+        await file.writeAsString(content);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Exportiert: ${file.path}')),
+          );
+        }
+      } else {
+        final path = await FilePicker.platform.saveFile(
+          fileName: 'minca_export.ics',
+          type: FileType.custom,
+          allowedExtensions: ['ics'],
+        );
+        if (path != null) {
+          await File(path).writeAsString(content);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Export erfolgreich')),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Export fehlgeschlagen: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ));
+      }
+    }
+  }
+
+  Future<void> _importCalendar() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['ics'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final file = result.files.first;
+    final String content;
+    if (file.bytes != null) {
+      content = utf8.decode(file.bytes!);
+    } else if (file.path != null) {
+      content = await File(file.path!).readAsString();
+    } else {
+      return;
+    }
+
+    setState(() => _isImporting = true);
+    try {
+      final count =
+          await context.read<CalendarProvider>().importEvents(content);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$count Termin(e) importiert')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Import fehlgeschlagen: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _isImporting = false);
     }
   }
 
@@ -329,6 +414,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           tooltip: 'Löschen',
                         ),
                       ),
+
+                  // ── Import / Export ────────────────────────────────────────
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isImporting ? null : _importCalendar,
+                          icon: _isImporting
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 1.5),
+                                )
+                              : const Icon(Icons.upload_file_outlined,
+                                  size: 18),
+                          label: Text(
+                              _isImporting ? 'Importieren…' : 'Importieren'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _exportCalendar,
+                          icon: const Icon(Icons.download_outlined, size: 18),
+                          label: const Text('Exportieren'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               );
             },
