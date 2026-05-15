@@ -22,7 +22,9 @@ jobs:
 
       - name: Build Linux
         working-directory: flutter_app
-        run: flutter build linux --release
+        run: |
+          VERSION="${{ github.ref_name }}"
+          flutter build linux --release --dart-define=APP_VERSION=${VERSION#v}
 
       - name: Package Linux build
         run: |
@@ -45,7 +47,9 @@ jobs:
 
       - name: Build Windows
         working-directory: flutter_app
-        run: flutter build windows --release
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          flutter build windows --release --dart-define=APP_VERSION=$version
 
       - name: Package Windows build
         run: |

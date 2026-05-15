@@ -2,11 +2,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 const _apiUrl =
     'https://api.github.com/repos/t-foerst/minca/releases/latest';
+
+// Injected at build time via --dart-define=APP_VERSION=x.y.z.
+// Falls back to 0.0.0 in dev so the banner never shows without a real build.
+const _currentVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.0.0');
 
 class UpdateInfo {
   final String version;
@@ -23,8 +26,7 @@ class UpdateInfo {
 class UpdateService {
   static Future<UpdateInfo?> checkForUpdate() async {
     try {
-      final info = await PackageInfo.fromPlatform();
-      final current = info.version;
+      final current = _currentVersion;
 
       final response = await http
           .get(
@@ -139,9 +141,23 @@ class UpdateService {
       String tarPath, String installDir) async {
     final exe = Platform.resolvedExecutable;
     final scriptPath = '${Directory.systemTemp.path}/minca_update.sh';
+    final logPath = '${Directory.systemTemp.path}/minca_update.log';
+
+    // Capture display env vars at script-write time so the detached process
+    // can still open a window after the parent app exits.
+    final display = Platform.environment['DISPLAY'] ?? '';
+    final waylandDisplay = Platform.environment['WAYLAND_DISPLAY'] ?? '';
+    final dbusAddress = Platform.environment['DBUS_SESSION_BUS_ADDRESS'] ?? '';
+    final xdgRuntime = Platform.environment['XDG_RUNTIME_DIR'] ?? '';
 
     final script = '#!/bin/bash\n'
+        'exec > "$logPath" 2>&1\n'
+        'set -x\n'
         'sleep 1\n'
+        'export DISPLAY="$display"\n'
+        'export WAYLAND_DISPLAY="$waylandDisplay"\n'
+        'export DBUS_SESSION_BUS_ADDRESS="$dbusAddress"\n'
+        'export XDG_RUNTIME_DIR="$xdgRuntime"\n'
         "tar -xzf '$tarPath' -C '$installDir'\n"
         "chmod +x '$exe'\n"
         "nohup '$exe' > /dev/null 2>&1 &\n"
