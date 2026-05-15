@@ -85,7 +85,9 @@ class CalendarProvider extends ChangeNotifier {
   }
 
   Future<void> setViewMonth(DateTime month) async {
-    _viewMonth = DateTime(month.year, month.month, 1);
+    final normalized = DateTime(month.year, month.month, 1);
+    if (_viewMonth.year == normalized.year && _viewMonth.month == normalized.month) return;
+    _viewMonth = normalized;
     notifyListeners();
     await loadEvents();
   }

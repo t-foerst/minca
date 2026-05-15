@@ -9,8 +9,54 @@ import '../services/update_service.dart';
 import 'event_form_screen.dart';
 import 'settings_screen.dart';
 
-class CalendarScreen extends StatelessWidget {
+// ── Root screen ───────────────────────────────────────────────────────────────
+
+class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
+
+  @override
+  State<CalendarScreen> createState() => _CalendarScreenState();
+}
+
+class _CalendarScreenState extends State<CalendarScreen> {
+  // Enough pages for ~50 years in each direction.
+  static const _initialPage = 600;
+  final _now = DateTime.now();
+  late final PageController _pageController =
+      PageController(initialPage: _initialPage);
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  DateTime _pageToMonth(int page) =>
+      DateTime(_now.year, _now.month + (page - _initialPage));
+
+  int get _currentPage =>
+      _pageController.hasClients
+          ? (_pageController.page?.round() ?? _initialPage)
+          : _initialPage;
+
+  void _animateTo(int page) => _pageController.animateToPage(
+        page,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOut,
+      );
+
+  void _goToPrev() {
+    final page = _currentPage;
+    // Update header immediately so the label doesn't lag behind the animation.
+    context.read<CalendarProvider>().setViewMonth(_pageToMonth(page - 1));
+    _animateTo(page - 1);
+  }
+
+  void _goToNext() {
+    final page = _currentPage;
+    context.read<CalendarProvider>().setViewMonth(_pageToMonth(page + 1));
+    _animateTo(page + 1);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,9 +72,9 @@ class CalendarScreen extends StatelessWidget {
             tooltip: 'Heute',
             onPressed: () {
               final now = DateTime.now();
-              final p = context.read<CalendarProvider>();
-              p.selectDate(now);
-              p.setViewMonth(now);
+              context.read<CalendarProvider>().selectDate(now);
+              // Jump without animation when potentially far away.
+              _pageController.jumpToPage(_initialPage);
             },
           ),
           IconButton(
@@ -42,19 +88,20 @@ class CalendarScreen extends StatelessWidget {
       body: Column(
         children: [
           if (Platform.isWindows || Platform.isLinux) const _UpdateBanner(),
-          const _MonthHeader(),
-          const Expanded(child: _MonthGrid()),
-        ],
-      ),
-      floatingActionButton: Consumer<CalendarProvider>(
-        builder: (context, provider, _) => FloatingActionButton(
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => EventFormScreen(initialDate: provider.selectedDate),
+          _MonthHeader(onPrev: _goToPrev, onNext: _goToNext),
+          Expanded(
+            child: PageView.builder(
+              controller: _pageController,
+              // onPageChanged fires when the integer page index crosses 0.5 during
+              // a swipe, so the header label updates fluidly mid-gesture.
+              onPageChanged: (page) => context
+                  .read<CalendarProvider>()
+                  .setViewMonth(_pageToMonth(page)),
+              itemBuilder: (context, page) =>
+                  _MonthGrid(month: _pageToMonth(page)),
             ),
           ),
-          child: const Icon(Icons.add),
-        ),
+        ],
       ),
     );
   }
@@ -63,15 +110,17 @@ class CalendarScreen extends StatelessWidget {
 // ── Month navigation header ───────────────────────────────────────────────────
 
 class _MonthHeader extends StatelessWidget {
-  const _MonthHeader();
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
+
+  const _MonthHeader({required this.onPrev, required this.onNext});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Consumer<CalendarProvider>(
       builder: (context, provider, _) {
-        final month = provider.viewMonth;
-        final label = DateFormat('MMMM yyyy', 'de').format(month);
+        final label = DateFormat('MMMM yyyy', 'de').format(provider.viewMonth);
 
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -79,9 +128,7 @@ class _MonthHeader extends StatelessWidget {
             children: [
               IconButton(
                 icon: const Icon(Icons.chevron_left),
-                onPressed: () => provider.setViewMonth(
-                  DateTime(month.year, month.month - 1),
-                ),
+                onPressed: onPrev,
               ),
               Expanded(
                 child: Row(
@@ -94,25 +141,25 @@ class _MonthHeader extends StatelessWidget {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    if (provider.isLoading) ...[
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 1.5,
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                    // Always reserve this fixed space so the text position
+                    // never shifts when the loading indicator appears/disappears.
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: provider.isLoading
+                          ? CircularProgressIndicator(
+                              strokeWidth: 1.5,
+                              color: cs.onSurfaceVariant,
+                            )
+                          : null,
+                    ),
                   ],
                 ),
               ),
               IconButton(
                 icon: const Icon(Icons.chevron_right),
-                onPressed: () => provider.setViewMonth(
-                  DateTime(month.year, month.month + 1),
-                ),
+                onPressed: onNext,
               ),
             ],
           ),
@@ -125,75 +172,73 @@ class _MonthHeader extends StatelessWidget {
 // ── Full-screen month grid ────────────────────────────────────────────────────
 
 class _MonthGrid extends StatelessWidget {
-  const _MonthGrid();
+  final DateTime month;
+
+  const _MonthGrid({super.key, required this.month});
 
   static const _weekdays = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final cells = _buildCells(month);
+    final today = DateTime.now();
+    final rowCount = (cells.length / 7).ceil();
 
-    return Consumer<CalendarProvider>(
-      builder: (context, provider, _) {
-        final cells = _buildCells(provider.viewMonth);
-        final today = DateTime.now();
-        final rowCount = (cells.length / 7).ceil();
-
-        return Column(
-          children: [
-            // ── Weekday header row
-            SizedBox(
-              height: 30,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (int col = 0; col < 7; col++) ...[
-                    if (col > 0)
-                      VerticalDivider(width: 1, thickness: 1, color: cs.outline),
-                    Expanded(
-                      child: Center(
-                        child: Text(
-                          _weekdays[col],
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w500,
-                            color: cs.onSurfaceVariant,
-                          ),
-                        ),
+    return Column(
+      children: [
+        // ── Weekday header row
+        SizedBox(
+          height: 30,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (int col = 0; col < 7; col++) ...[
+                if (col > 0)
+                  VerticalDivider(width: 1, thickness: 1, color: cs.outline),
+                Expanded(
+                  child: Center(
+                    child: Text(
+                      _weekdays[col],
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: cs.onSurfaceVariant,
                       ),
                     ),
-                  ],
-                ],
-              ),
-            ),
-            Divider(height: 1, thickness: 1, color: cs.outline),
-
-            // ── Day rows (each takes equal vertical space)
-            for (int row = 0; row < rowCount; row++) ...[
-              if (row > 0) Divider(height: 1, thickness: 1, color: cs.outline),
-              Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    for (int col = 0; col < 7; col++) ...[
-                      if (col > 0)
-                        VerticalDivider(width: 1, thickness: 1, color: cs.outline),
-                      Expanded(
-                        child: _DayCell(
-                          date: row * 7 + col < cells.length
-                              ? cells[row * 7 + col]
-                              : null,
-                          today: today,
-                        ),
-                      ),
-                    ],
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ],
-          ],
-        );
-      },
+          ),
+        ),
+        Divider(height: 1, thickness: 1, color: cs.outline),
+
+        // ── Day rows
+        for (int row = 0; row < rowCount; row++) ...[
+          if (row > 0) Divider(height: 1, thickness: 1, color: cs.outline),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (int col = 0; col < 7; col++) ...[
+                  if (col > 0)
+                    VerticalDivider(width: 1, thickness: 1, color: cs.outline),
+                  Expanded(
+                    child: _DayCell(
+                      date: row * 7 + col < cells.length
+                          ? cells[row * 7 + col]
+                          : null,
+                      today: today,
+                      viewMonth: month,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ],
     );
   }
 
@@ -214,8 +259,13 @@ class _MonthGrid extends StatelessWidget {
 class _DayCell extends StatefulWidget {
   final DateTime? date;
   final DateTime today;
+  final DateTime viewMonth;
 
-  const _DayCell({required this.date, required this.today});
+  const _DayCell({
+    required this.date,
+    required this.today,
+    required this.viewMonth,
+  });
 
   @override
   State<_DayCell> createState() => _DayCellState();
@@ -233,7 +283,8 @@ class _DayCellState extends State<_DayCell> {
 
     final isSelected = DateUtils.isSameDay(widget.date, provider.selectedDate);
     final isToday = DateUtils.isSameDay(widget.date, widget.today);
-    final isCurrentMonth = widget.date!.month == provider.viewMonth.month;
+    final isCurrentMonth = widget.date!.month == widget.viewMonth.month &&
+        widget.date!.year == widget.viewMonth.year;
 
     final events = provider.events
         .where((e) => e.occursOn(widget.date!))
@@ -278,7 +329,8 @@ class _DayCellState extends State<_DayCell> {
                         )
                       : isToday
                           ? BoxDecoration(
-                              border: Border.all(color: cs.onSurface, width: 1.5),
+                              border:
+                                  Border.all(color: cs.onSurface, width: 1.5),
                               shape: BoxShape.circle,
                             )
                           : null,
@@ -287,7 +339,8 @@ class _DayCellState extends State<_DayCell> {
                       '${widget.date!.day}',
                       style: TextStyle(
                         fontSize: 12,
-                        fontWeight: isToday ? FontWeight.w700 : FontWeight.normal,
+                        fontWeight:
+                            isToday ? FontWeight.w700 : FontWeight.normal,
                         color: isSelected
                             ? cs.surface
                             : isCurrentMonth
@@ -314,7 +367,6 @@ class _CellEvents extends StatelessWidget {
 
   const _CellEvents({required this.events});
 
-  // Each chip: 16px height + 2px top + 2px bottom margin
   static const _chipSlot = 20.0;
   static const _overflowSlot = 16.0;
 
@@ -386,12 +438,14 @@ class _UpdateBannerState extends State<_UpdateBanner> {
   }
 
   Future<void> _applyUpdate() async {
-    setState(() { _downloading = true; _progress = 0; });
+    setState(() {
+      _downloading = true;
+      _progress = 0;
+    });
     try {
       await UpdateService.downloadAndApply(_update!, (p) {
         if (mounted) setState(() => _progress = p);
       });
-      // exit(0) is called inside downloadAndApply on success
     } catch (e) {
       if (mounted) {
         setState(() => _downloading = false);
@@ -482,7 +536,8 @@ class _EventChip extends StatelessWidget {
     return GestureDetector(
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => EventFormScreen(event: event, initialDate: event.start),
+          builder: (_) =>
+              EventFormScreen(event: event, initialDate: event.start),
         ),
       ),
       child: Container(
