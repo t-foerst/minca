@@ -1,8 +1,11 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../models/event.dart';
 import '../providers/calendar_provider.dart';
+import '../services/update_service.dart';
 import 'event_form_screen.dart';
 import 'settings_screen.dart';
 
@@ -36,10 +39,11 @@ class CalendarScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: const Column(
+      body: Column(
         children: [
-          _MonthHeader(),
-          Expanded(child: _MonthGrid()),
+          if (Platform.isWindows || Platform.isLinux) const _UpdateBanner(),
+          const _MonthHeader(),
+          const Expanded(child: _MonthGrid()),
         ],
       ),
       floatingActionButton: Consumer<CalendarProvider>(
@@ -351,6 +355,113 @@ class _CellEvents extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+// ── Auto-update banner ────────────────────────────────────────────────────────
+
+class _UpdateBanner extends StatefulWidget {
+  const _UpdateBanner();
+
+  @override
+  State<_UpdateBanner> createState() => _UpdateBannerState();
+}
+
+class _UpdateBannerState extends State<_UpdateBanner> {
+  UpdateInfo? _update;
+  bool _dismissed = false;
+  bool _downloading = false;
+  double _progress = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final info = await UpdateService.checkForUpdate();
+    if (mounted && info != null) setState(() => _update = info);
+  }
+
+  Future<void> _applyUpdate() async {
+    setState(() { _downloading = true; _progress = 0; });
+    try {
+      await UpdateService.downloadAndApply(_update!, (p) {
+        if (mounted) setState(() => _progress = p);
+      });
+      // exit(0) is called inside downloadAndApply on success
+    } catch (e) {
+      if (mounted) {
+        setState(() => _downloading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Update fehlgeschlagen: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_update == null || _dismissed) return const SizedBox.shrink();
+
+    final cs = Theme.of(context).colorScheme;
+
+    return ColoredBox(
+      color: cs.primaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: _downloading
+            ? Row(children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Update wird heruntergeladen…',
+                        style: TextStyle(
+                            fontSize: 13, color: cs.onPrimaryContainer),
+                      ),
+                      const SizedBox(height: 4),
+                      LinearProgressIndicator(
+                        value: _progress > 0 ? _progress : null,
+                        backgroundColor:
+                            cs.onPrimaryContainer.withValues(alpha: 0.2),
+                      ),
+                    ],
+                  ),
+                ),
+              ])
+            : Row(children: [
+                Icon(Icons.system_update_outlined,
+                    size: 18, color: cs.onPrimaryContainer),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Version ${_update!.version} verfügbar',
+                    style: TextStyle(
+                        fontSize: 13, color: cs.onPrimaryContainer),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _applyUpdate,
+                  style: TextButton.styleFrom(
+                      foregroundColor: cs.onPrimaryContainer),
+                  child: const Text('Jetzt aktualisieren',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close,
+                      size: 16, color: cs.onPrimaryContainer),
+                  onPressed: () => setState(() => _dismissed = true),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ]),
+      ),
     );
   }
 }
